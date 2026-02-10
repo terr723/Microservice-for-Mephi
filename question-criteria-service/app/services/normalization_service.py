@@ -18,7 +18,12 @@ class NormalizationService:
             raise ValueError(f"Неизвестный метод нормализации: {method}")
         
         # Шаг 2: Применяем ограничения [0.05, 0.45] с итеративной проекцией
-        return self._constrained_normalize(weights, min_weight=0.05, max_weight=0.45)
+        weights = self._constrained_normalize(weights, min_weight=0.05, max_weight=0.45)
+        
+        # Шаг 3: Округляем до 2 знаков с сохранением суммы = 1.0
+        weights = self._round_preserve_sum(weights, decimals=2)
+        
+        return weights
     
     def _constrained_normalize(
         self, 
@@ -30,29 +35,18 @@ class NormalizationService:
     ) -> torch.Tensor:
         """
         Итеративная проекция весов на симплекс с ограничениями [min_weight, max_weight].
-        
-        Алгоритм:
-        1. Обрезаем значения за пределы диапазона
-        2. Перенормируем сумму на 1
-        3. Повторяем до сходимости или достижения макс. итераций
-        
-        Математическое ограничение:
-        - Ограничение выполнимо только если: min_weight * n ≤ 1 ≤ max_weight * n
-        - Для [0.05, 0.45]: 3 ≤ n ≤ 20 критериев
         """
         n = len(weights)
         device = weights.device
         
         # Проверка математической выполнимости ограничений
         if n < 3:  # 1 / 0.45 ≈ 2.22 → нужно минимум 3 критерия
-            # Для 1-2 критериев используем равномерное распределение (ограничение невозможно)
             return torch.ones(n, device=device) / n
         
         if n > 20:  # 1 / 0.05 = 20 → максимум 20 критериев
-            # Для >20 критериев используем равномерное распределение (ограничение невозможно)
             return torch.ones(n, device=device) / n
         
-        # Итеративная проекция на ограниченный симплекс
+        # Итеративная проекция
         weights = weights.clone()
         
         for _ in range(max_iterations):
@@ -62,20 +56,68 @@ class NormalizationService:
             # 2. Перенормируем сумму на 1
             total = weights.sum()
             if total == 0:
-                # Защита от деления на ноль
                 weights = torch.ones(n, device=device) / n
                 break
             
             weights = weights / total
             
-            # 3. Проверяем сходимость (все веса в диапазоне с небольшим допуском)
+            # 3. Проверяем сходимость
             if (weights >= min_weight - tolerance).all() and (weights <= max_weight + tolerance).all():
                 break
         
-        # Финальная обрезка для устранения численных ошибок
+        # Финальная обрезка и перенормировка
         weights = torch.clamp(weights, min_weight, max_weight)
-        
-        # Финальная перенормировка (гарантируем сумму = 1)
         weights = weights / weights.sum()
         
         return weights
+    
+    def _round_preserve_sum(self, weights: torch.Tensor, decimals: int = 2) -> torch.Tensor:
+        """
+        Округление весов до указанного числа знаков с сохранением суммы = 1.0.
+        
+        Алгоритм "распределения остатка":
+        1. Умножаем на 10^decimals и получаем целые части
+        2. Вычисляем недостающие единицы до 100 (для 2 знаков)
+        3. Распределяем недостающие единицы по элементам с наибольшими дробными остатками
+        """
+        factor = 10 ** decimals
+        n = len(weights)
+        
+        # Умножаем и получаем целые части
+        scaled = weights * factor
+        integer_parts = torch.floor(scaled).long()
+        fractional_parts = scaled - integer_parts.float()
+        
+        # Сумма целых частей
+        current_sum = integer_parts.sum().item()
+        target_sum = factor  # 100 для 2 знаков
+        
+        # Сколько единиц нужно добавить/убрать
+        diff = int(target_sum - current_sum)
+        
+        # Создаем копию для модификации
+        result = integer_parts.clone().float()
+        
+        if diff > 0:
+            # Сортируем индексы по убыванию дробной части
+            _, indices = torch.sort(fractional_parts, descending=True)
+            for i in range(min(diff, n)):
+                result[indices[i]] += 1
+        elif diff < 0:
+            # Сортируем по возрастанию дробной части
+            _, indices = torch.sort(fractional_parts)
+            for i in range(min(-diff, n)):
+                result[indices[i]] -= 1
+        
+        # Преобразуем обратно в веса
+        rounded = result / factor
+        
+        # Финальная проверка суммы (защита от численных ошибок)
+        total = rounded.sum()
+        if abs(total - 1.0) > 1e-5:
+            # Коррекция последнего элемента
+            rounded[-1] += (1.0 - total)
+            # Повторное округление
+            rounded = torch.round(rounded * factor) / factor
+        
+        return rounded

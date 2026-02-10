@@ -35,16 +35,17 @@ async def calculate_criteria_weights(
         weights = normalization_service.normalize(sims, request.normalization.value)
         
         # 4. Сортировка и формирование ответа
+        # 4. Сортировка и формирование ответа
         sorted_idx = torch.argsort(weights, descending=True)
         criteria_weights = [
             CriteriaWeight(
                 criterion=request.criteria[i],
-                weight=weights[i].item(),
+                weight=round(weights[i].item(), 2),
                 similarity_score=sims[i].item(),
                 rank=rank + 1
             )
             for rank, i in enumerate(sorted_idx)
-        ]
+]
         
         return WeightResponse(
             question=request.question,
