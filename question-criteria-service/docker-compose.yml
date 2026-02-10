@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  question-criteria-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: question_criteria_service
+    ports:
+      - "8000:8000"
+    environment:
+      - EMBEDDING_MODEL_NAME=intfloat/multilingual-e5-small
+      - MODEL_DEVICE=cpu
+      - ENVIRONMENT=production
+      - DEBUG=false
+    volumes:
+      # Сохраняем кэш моделей между перезапусками
+      - model_cache:/home/appuser/.cache/huggingface
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  model_cache:
+    driver: local
